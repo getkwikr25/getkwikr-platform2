@@ -1538,8 +1538,8 @@ function initializeSearchFunctionality() {
   if (document.getElementById('provinceMain') && document.getElementById('cityMain')) {
     console.log('Main search functionality initializing...')
     
-    // Populate provinces dropdown
-    populateProvinces()
+    // Populate provinces dropdown with default service type
+    populateProvinces('Cleaning Services')
     
     // Populate additional services
     populateAdditionalServices('Cleaning Services') // Default
@@ -1557,26 +1557,55 @@ function initializeSearchFunctionality() {
   }
 }
 
-// Populate provinces dropdown with counts
-function populateProvinces() {
+// Populate provinces dropdown with counts from real API
+async function populateProvinces(serviceType = '') {
   const provinceSelect = document.getElementById('provinceMain')
   if (!provinceSelect) return
   
-  console.log('Populating provinces dropdown')
+  console.log('Populating provinces dropdown via API with service type:', serviceType)
   
-  // Calculate total workers per province
-  const provinceCounts = {}
-  Object.keys(PROVINCES_CITIES).forEach(code => {
-    const cities = MOCK_WORKER_COUNTS[code] || {}
-    const totalWorkers = Object.values(cities).reduce((sum, count) => sum + count, 0)
-    provinceCounts[code] = totalWorkers
-  })
-  
-  // Clear existing options except the first one
-  provinceSelect.innerHTML = '<option value="">All Provinces</option>'
-  
-  // Add province options with counts, sorted by worker count
-  Object.entries(provinceCounts)
+  try {
+    // Call real API instead of using mock data
+    let url = '/api/locations/provinces?' + Date.now()
+    if (serviceType && serviceType !== '') {
+      url += '&serviceType=' + encodeURIComponent(serviceType)
+    }
+    
+    const response = await fetch(url, {
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    })
+    const data = await response.json()
+    
+    if (data.success && data.provinces) {
+      console.log('Provinces populated with counts:', data.provinces.reduce((acc, p) => {
+        acc[p.province] = p.worker_count
+        return acc
+      }, {}))
+      
+      // Clear existing options
+      provinceSelect.innerHTML = '<option value="">All Provinces</option>'
+      
+      // Add province options with real counts from API
+      data.provinces.forEach(province => {
+        const option = document.createElement('option')
+        option.value = province.province
+        option.textContent = province.province + ' (' + province.worker_count + ' workers)'
+        provinceSelect.appendChild(option)
+      })
+    } else {
+      console.error('Failed to load provinces from API')
+      // Fallback to empty dropdown
+      provinceSelect.innerHTML = '<option value="">All Provinces</option>'
+    }
+  } catch (error) {
+    console.error('Error loading provinces:', error)
+    // Clear existing options except the first one
+    provinceSelect.innerHTML = '<option value="">All Provinces</option>'
+  }
+}
     .sort((a, b) => b[1] - a[1]) // Sort by worker count descending
     .forEach(([code, count]) => {
       const province = PROVINCES_CITIES[code]
@@ -1638,6 +1667,11 @@ function onProvinceChange(provinceCode) {
 // Handle service type change and update additional services
 function onServiceTypeChange(serviceType) {
   console.log('Service type changed to:', serviceType)
+  
+  // Update provinces with filtered counts based on service type
+  populateProvinces(serviceType)
+  
+  // Update additional services and tasks
   populateAdditionalServices(serviceType)
   updatePopularTasks(serviceType)
 }

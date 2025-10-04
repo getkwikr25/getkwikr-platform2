@@ -6168,10 +6168,15 @@ app.get('/', (c) => {
               updateAdditionalServicesSearch(serviceTypeSearchSelect.value);
             }
             
-            // Load provinces on page load with current service type
+            // Load provinces on page load with current service type  
+            // Ensure we always pass the default service type for initial load
             const initialServiceType = serviceTypeSelect ? serviceTypeSelect.value : 'Cleaning Services';
             console.log('Loading provinces with initial service type:', initialServiceType);
-            loadProvinces(initialServiceType);
+            
+            // Wait a moment to ensure DOM is fully ready, then load provinces
+            setTimeout(() => {
+              loadProvinces(initialServiceType);
+            }, 100);
             
             // Load service categories
             loadServiceCategories();
