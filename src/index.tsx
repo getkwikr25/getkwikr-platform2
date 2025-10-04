@@ -1146,15 +1146,14 @@ app.post('/api/providers/search', async (c) => {
     
     Logger.info('Provider search request', { serviceType, province, city, budget })
     
-    // Build the main query using same structure as SSR search (users + worker_services)
+    // Build the main query using simplified structure to avoid aggregate function issues
     let searchQuery = `
       SELECT DISTINCT
         u.id, u.first_name, u.last_name, u.email, u.phone, u.city, u.province, u.is_verified,
-        p.bio, p.profile_image_url, p.company_description,
-        AVG(ws.hourly_rate) as avg_rate,
-        COUNT(ws.id) as service_count,
-        GROUP_CONCAT(ws.service_name) as services_list,
-        (SELECT ws2.description FROM worker_services ws2 WHERE ws2.user_id = u.id AND ws2.is_available = 1 LIMIT 1) as primary_description
+        p.bio, p.profile_image_url,
+        ws.hourly_rate,
+        ws.service_name,
+        ws.description as primary_description
       FROM users u
       LEFT JOIN user_profiles p ON u.id = p.user_id
       LEFT JOIN worker_services ws ON u.id = ws.user_id
@@ -1226,9 +1225,7 @@ app.post('/api/providers/search', async (c) => {
     }
     
     searchQuery += `
-      GROUP BY u.id, u.first_name, u.last_name, u.email, u.phone, u.city, u.province, u.is_verified,
-               p.bio, p.profile_image_url, p.company_description
-      ORDER BY u.is_verified DESC, avg_rate ASC
+      ORDER BY u.is_verified DESC, ws.hourly_rate ASC
     `
     
     Logger.info('Executing search query', { query: searchQuery, params })
@@ -1239,8 +1236,8 @@ app.post('/api/providers/search', async (c) => {
       const fullName = `${worker.first_name || ''} ${worker.last_name || ''}`.trim()
       const displayName = fullName || 'Professional Service Provider'
       
-      // Parse services list
-      const servicesList = worker.services_list ? worker.services_list.split(',') : []
+      // Use single service name from current record
+      const servicesList = worker.service_name ? [worker.service_name] : ['General Services']
       
       // Generate initials from display name
       const nameParts = displayName.split(' ')
@@ -1254,14 +1251,14 @@ app.post('/api/providers/search', async (c) => {
         company: displayName,
         rating: null, // No fake ratings - show actual reviews when available
         reviews: null, // No fake review counts - show actual when available  
-        rate: worker.avg_rate ? Math.round(worker.avg_rate) : null, // Use actual hourly rate only
+        rate: worker.hourly_rate ? Math.round(worker.hourly_rate) : null, // Use actual hourly rate only
         distance: null, // No fake distances - calculate real distance when location services available
-        services: servicesList.length > 0 ? servicesList : ['General Services'],
+        services: servicesList,
         image: worker.profile_image_url || null, // Use actual profile image or null
         initials: initials.toUpperCase(),
         verified: worker.is_verified === 1,
         available: null, // No fake availability - use actual availability when implemented
-        bio: truncateDescription(worker.company_description || worker.bio || worker.primary_description, 400), // Truncate to 400 characters for search results
+        bio: truncateDescription(worker.bio || worker.primary_description, 400), // Truncate to 400 characters for search results
         location: `${worker.city || ''}, ${worker.province || ''}`.replace(', ,', '').trim() || null,
         phone: worker.phone,
         email: worker.email
@@ -1291,7 +1288,7 @@ app.post('/api/providers/search', async (c) => {
     Logger.error('Provider search error', error as Error)
     return c.json({ 
       success: false,
-      error: 'Search failed',
+      error: error instanceof Error ? error.message : 'Search failed',
       providers: [],
       total: 0 
     }, 500)
@@ -1342,11 +1339,11 @@ function getAvatarColor(initials: string | undefined): string {
 // Search Results Page
 app.get('/search', async (c) => {
   const searchParams = {
-    serviceType: c.req.query('serviceType') || 'Cleaning',
+    serviceType: c.req.query('service') || c.req.query('serviceType') || '', // Accept both 'service' and 'serviceType'
     province: c.req.query('province') || '',
     city: c.req.query('city') || '',
     budget: c.req.query('budget') || '5000',
-    additionalServices: c.req.query('additionalServices') || '',
+    additionalServices: c.req.query('additional') || c.req.query('additionalServices') || '', // Accept both parameter names
     page: parseInt(c.req.query('page') || '1'),
     limit: parseInt(c.req.query('limit') || '20'), // 20 results per page
     sortBy: c.req.query('sortBy') || 'rating'
@@ -1360,15 +1357,14 @@ app.get('/search', async (c) => {
     // Use the same working API logic that powers /api/providers/search for consistency
     const { serviceType, province, city, budget } = searchParams
     
-    // Build the main query using same structure as API search (users + worker_services)
+    // Build the main query using same corrected structure as API search (users + worker_services)
     let searchQuery = `
       SELECT DISTINCT
         u.id, u.first_name, u.last_name, u.email, u.phone, u.city, u.province, u.is_verified,
-        p.bio, p.profile_image_url, p.company_description,
-        AVG(ws.hourly_rate) as avg_rate,
-        COUNT(ws.id) as service_count,
-        GROUP_CONCAT(ws.service_name) as services_list,
-        (SELECT ws2.description FROM worker_services ws2 WHERE ws2.user_id = u.id AND ws2.is_available = 1 LIMIT 1) as primary_description
+        p.bio, p.profile_image_url,
+        ws.hourly_rate,
+        ws.service_name,
+        ws.description as primary_description
       FROM users u
       LEFT JOIN user_profiles p ON u.id = p.user_id
       LEFT JOIN worker_services ws ON u.id = ws.user_id
@@ -1440,9 +1436,7 @@ app.get('/search', async (c) => {
     }
     
     searchQuery += `
-      GROUP BY u.id, u.first_name, u.last_name, u.email, u.phone, u.city, u.province, u.is_verified,
-               p.bio, p.profile_image_url, p.company_description
-      ORDER BY u.is_verified DESC, avg_rate ASC
+      ORDER BY u.is_verified DESC, ws.hourly_rate ASC
     `
     
     const searchResults = await c.env.DB.prepare(searchQuery).bind(...params).all()
@@ -1453,8 +1447,8 @@ app.get('/search', async (c) => {
       const fullName = `${worker.first_name || ''} ${worker.last_name || ''}`.trim()
       const displayName = fullName || 'Professional Service Provider'
       
-      // Parse services list
-      const servicesList = worker.services_list ? worker.services_list.split(',') : []
+      // Use single service name from current record
+      const servicesList = worker.service_name ? [worker.service_name] : ['General Services']
       
       // Generate initials from display name
       const nameParts = displayName.split(' ')
@@ -1469,11 +1463,11 @@ app.get('/search', async (c) => {
         company: displayName,
         rating: null, // No fake ratings - show actual reviews when available
         reviewCount: null, // No fake review counts - show actual when available
-        hourlyRate: worker.avg_rate ? Math.round(worker.avg_rate) : null, // Use actual hourly rate only
+        hourlyRate: worker.hourly_rate ? Math.round(worker.hourly_rate) : null, // Use actual hourly rate only
         experience: null, // Use actual experience when available from database
         location: `${worker.city || ''}, ${worker.province || ''}`.replace(', ,', '').trim() || null,
         phone: worker.phone,
-        description: truncateDescription(worker.company_description || worker.bio || worker.primary_description, 400), // Truncate to 400 characters for search results
+        description: truncateDescription(worker.bio || worker.primary_description, 400), // Truncate to 400 characters for search results
         services: servicesList.length > 0 ? servicesList : ['General Services'],
         profileUrl: `/universal-profile/${worker.id}`,
         image: worker.profile_image_url || null, // Use actual profile image or null
@@ -4202,630 +4196,6 @@ app.get('/profile/:userId', async (c) => {
 */ 
 // End of orphaned HTML comment block
 
-app.get('/search', (c) => {
-  return c.html(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Find Service Providers - The Canadian Platform</title>
-        <meta name="description" content="The Canadian platform that connects you with trusted, verified service providers for all your needs.">
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script>
-          tailwind.config = {
-            theme: {
-              extend: {
-                colors: {
-                  'primary-blue': '#4F73DF',
-                  'primary-dark': '#3A5BB8',
-                  'light-blue': '#E8F0FF'
-                }
-              }
-            }
-          }
-        </script>
-        <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
-        <style>
-          .gradient-bg {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          }
-          .search-shadow {
-            box-shadow: 0 20px 60px -10px rgba(0, 0, 0, 0.15);
-          }
-          .hover-lift:hover {
-            transform: translateY(-2px);
-          }
-        </style>
-    </head>
-    <body class="bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 min-h-screen">
-        <!-- Hero Section -->
-        <div class="gradient-bg text-white py-20">
-            <div class="max-w-6xl mx-auto px-4 text-center">
-                <h1 class="text-4xl md:text-5xl font-bold mb-4">
-                    The Canadian platform that connects you with trusted, verified service providers for all your needs.
-                </h1>
-                <p class="text-xl text-blue-100 mb-12 max-w-3xl mx-auto">
-                    From home repairs to professional services - find qualified, insured, and background-checked professionals in your area.
-                </p>
-                
-                <!-- Main Search Card -->
-                <div class="bg-white rounded-2xl p-8 shadow-2xl search-shadow max-w-4xl mx-auto">
-                    <h2 class="text-2xl font-semibold text-gray-800 mb-8 text-center">
-                        Find the right service provider for your needs
-                    </h2>
-                    
-                    <form id="searchForm" class="space-y-6">
-                        <!-- Search Inputs Row -->
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <!-- Service Type Dropdown -->
-                            <div class="space-y-2">
-                                <label class="flex items-center text-sm font-medium text-gray-700">
-                                    <i class="fas fa-tools text-primary-blue mr-2"></i>
-                                    Service Type
-                                </label>
-                                <select id="serviceTypeSearch" class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-primary-blue focus:ring-0 text-gray-800 bg-white">
-                                    <option value="Cleaning Services">Cleaning Services</option>
-                                    <option value="Plumbers">Plumbers</option>
-                                    <option value="Carpenters">Carpenters</option>
-                                    <option value="Electricians">Electricians</option>
-                                    <option value="Flooring">Flooring</option>
-                                    <option value="Painters">Painters</option>
-                                    <option value="Handyman">Handyman</option>
-                                    <option value="HVAC Services">HVAC Services</option>
-                                    <option value="General Contractor">General Contractor</option>
-                                    <option value="Roofing">Roofing</option>
-                                    <option value="Landscaping">Landscaping</option>
-                                    <option value="Renovations">Renovations</option>
-                                </select>
-                            </div>
-                            
-                            <!-- Location Input -->
-                            <div class="space-y-2">
-                                <label class="flex items-center text-sm font-medium text-gray-700">
-                                    <i class="fas fa-map-marker-alt text-primary-blue mr-2"></i>
-                                    Location in Canada
-                                </label>
-                                <input type="text" id="location" placeholder="Toronto, ON" value="Toronto, ON"
-                                       class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-primary-blue focus:ring-0 text-gray-800">
-                            </div>
-                        </div>
-                        
-                        
-                        <!-- Additional Services (Optional) -->
-                        <div class="space-y-3">
-                            <div class="flex items-center">
-                                <i class="fas fa-plus-circle text-primary-blue mr-2"></i>
-                                <span class="text-sm font-medium text-gray-700">Additional Services (Optional)</span>
-                            </div>
-                            <div id="additionalServicesSearchContainer" class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                                <!-- Dynamic content will be populated here by JavaScript -->
-                            </div>
-                            <!-- Other (please specify) text field for search -->
-                            <div id="otherServiceSearchField" class="hidden mt-3">
-                                <input type="text" id="otherServiceSearchText" placeholder="Please specify your additional service needs..."
-                                       class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-primary-blue focus:ring-0 text-gray-800">
-                            </div>
-                        </div>
-                        
-                        <!-- Budget Range -->
-                        <div class="space-y-3">
-                            <div class="flex items-center justify-between">
-                                <label class="flex items-center text-sm font-medium text-gray-700">
-                                    <i class="fas fa-dollar-sign text-primary-blue mr-2"></i>
-                                    Min. Budget Range
-                                </label>
-                                <span id="budgetDisplay" class="text-lg font-semibold text-primary-blue">Budget: $5000</span>
-                            </div>
-                            <div class="relative">
-                                <input type="range" id="budgetRange" min="150" max="5000" value="5000" step="50" 
-                                       class="w-full h-3 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
-                                       style="background: linear-gradient(to right, #4F73DF 0%, #4F73DF 100%, #e5e7eb 100%, #e5e7eb 100%);">
-                                <div class="flex justify-between text-xs text-gray-500 mt-2">
-                                    <span>$150</span>
-                                    <span>$5000</span>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Action Buttons -->
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
-                            <button type="button" id="findProvidersBtn" 
-                                    class="w-full bg-primary-blue text-white py-4 px-8 rounded-xl font-semibold text-lg hover:bg-primary-dark transition-all duration-300 hover-lift flex items-center justify-center">
-                                <i class="fas fa-search mr-3"></i>
-                                Find Service Providers
-                            </button>
-                            <a href="/signup/client"
-                                    class="w-full border-2 border-primary-blue text-primary-blue py-4 px-8 rounded-xl font-semibold text-lg hover:bg-primary-blue hover:text-white transition-all duration-300 hover-lift flex items-center justify-center">
-                                <i class="fas fa-briefcase mr-3"></i>
-                                Post a Job
-                            </a>
-                        </div>
-                    </form>
-                </div>
-                
-                <!-- Popular Tasks -->
-                <div class="mt-16 text-center">
-                    <p class="text-blue-100 mb-6 text-lg">Popular tasks for cleaner:</p>
-                    <div class="flex flex-wrap justify-center gap-3">
-                        <button class="bg-white bg-opacity-20 text-white px-6 py-3 rounded-full hover:bg-opacity-30 transition-all duration-300 hover-lift popular-task">
-                            clean my house
-                        </button>
-                        <button class="bg-white bg-opacity-20 text-white px-6 py-3 rounded-full hover:bg-opacity-30 transition-all duration-300 hover-lift popular-task">
-                            deep clean my kitchen
-                        </button>
-                        <button class="bg-white bg-opacity-20 text-white px-6 py-3 rounded-full hover:bg-opacity-30 transition-all duration-300 hover-lift popular-task">
-                            clean my office space
-                        </button>
-                        <button class="bg-white bg-opacity-20 text-white px-6 py-3 rounded-full hover:bg-opacity-30 transition-all duration-300 hover-lift popular-task">
-                            do a move-out cleaning
-                        </button>
-                        <button class="bg-white bg-opacity-20 text-white px-6 py-3 rounded-full hover:bg-opacity-30 transition-all duration-300 hover-lift popular-task">
-                            clean my windows
-                        </button>
-                    </div>
-                </div>
-                
-                <!-- Auth Links -->
-                <div class="mt-12 text-center">
-                    <p class="text-blue-100 mb-4">Already have an account? 
-                        <a href="/auth/login" class="text-white font-semibold hover:underline">Sign in</a>
-                        →
-                    </p>
-                    <p class="text-blue-100">
-                        <a href="/subscriptions/pricing" class="text-white font-semibold hover:underline">Create Account</a>
-                        →
-                        <span class="mx-2">|</span>
-                        <a href="/browse-jobs" class="text-white font-semibold hover:underline">Browse All Jobs</a>
-                        →
-                        <span class="mx-2">|</span>
-                        <a href="/find-jobs" class="text-white font-semibold hover:underline">Find Jobs</a>
-                        →
-                    </p>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Search Results Section -->
-        <div id="searchResults" class="hidden max-w-6xl mx-auto px-4 py-16">
-            <div class="flex items-center justify-between mb-8">
-                <h2 class="text-3xl font-bold text-gray-800">Service Providers Near You</h2>
-                <div class="flex items-center space-x-4">
-                    <select id="sortBy" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue">
-                        <option value="rating">Sort by Rating</option>
-                        <option value="price_low">Price: Low to High</option>
-                        <option value="price_high">Price: High to Low</option>
-                        <option value="distance">Distance</option>
-                        <option value="reviews">Most Reviews</option>
-                    </select>
-                    <div class="flex items-center space-x-2">
-                        <button id="gridView" class="p-2 border border-gray-300 rounded-lg hover:bg-gray-50">
-                            <i class="fas fa-th-large"></i>
-                        </button>
-                        <button id="listView" class="p-2 border border-gray-300 rounded-lg hover:bg-gray-50 bg-primary-blue text-white">
-                            <i class="fas fa-list"></i>
-                        </button>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Results Grid -->
-            <div class="grid grid-cols-1 gap-8">                
-                <!-- Provider Cards -->
-                <div id="providersList" class="space-y-6">
-                    <!-- Provider cards will be loaded here -->
-                </div>
-                
-                <!-- Loading State -->
-                <div id="loadingState" class="text-center py-12">
-                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-blue mx-auto mb-4"></div>
-                    <p class="text-gray-600">Finding service providers...</p>
-                </div>
-                
-                <!-- Empty State -->
-                <div id="emptyState" class="hidden text-center py-12">
-                    <i class="fas fa-search text-gray-400 text-4xl mb-4"></i>
-                    <h3 class="text-xl font-semibold text-gray-600 mb-2">No providers found</h3>
-                    <p class="text-gray-500 mb-6">Try adjusting your search criteria or expanding your location</p>
-                    <button class="bg-primary-blue text-white px-6 py-3 rounded-lg hover:bg-primary-dark">
-                        Modify Search
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Login/Signup Modals -->
-        <div id="loginModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-            <div class="bg-white rounded-2xl max-w-md w-full p-6">
-                <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-xl font-semibold">Sign In</h3>
-                    <button onclick="hideLoginModal()" class="text-gray-400 hover:text-gray-600">
-                        <i class="fas fa-times"></i>
-                    </button>
-                </div>
-                <form class="space-y-4">
-                    <div>
-                        <input type="email" placeholder="Email address" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue">
-                    </div>
-                    <div>
-                        <input type="password" placeholder="Password" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue">
-                    </div>
-                    <button type="submit" class="w-full bg-primary-blue text-white py-3 rounded-lg hover:bg-primary-dark">
-                        Sign In
-                    </button>
-                </form>
-                <p class="text-center text-sm text-gray-600 mt-4">
-                    Don't have an account? 
-                    <a href="/subscriptions/pricing" class="text-primary-blue hover:underline">Sign up</a>
-                </p>
-            </div>
-        </div>
-        
-        <div id="signupModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-            <div class="bg-white rounded-2xl max-w-md w-full p-6">
-                <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-xl font-semibold">Create Account</h3>
-                    <button onclick="hideSignupModal()" class="text-gray-400 hover:text-gray-600">
-                        <i class="fas fa-times"></i>
-                    </button>
-                </div>
-                <form class="space-y-4">
-                    <div class="grid grid-cols-2 gap-3">
-                        <input type="text" placeholder="First name" class="px-4 py-3 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue">
-                        <input type="text" placeholder="Last name" class="px-4 py-3 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue">
-                    </div>
-                    <div>
-                        <input type="email" placeholder="Email address" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue">
-                    </div>
-                    <div>
-                        <input type="password" placeholder="Password" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue">
-                    </div>
-                    <div>
-                        <select class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-primary-blue focus:border-primary-blue">
-                            <option>I'm looking for services (Client)</option>
-                            <option>I provide services (Worker)</option>
-                        </select>
-                    </div>
-                    <button type="submit" class="w-full bg-primary-blue text-white py-3 rounded-lg hover:bg-primary-dark">
-                        Create Account
-                    </button>
-                </form>
-                <p class="text-center text-sm text-gray-600 mt-4">
-                    Already have an account? 
-                    <a href="/auth/login" class="text-primary-blue hover:underline">Sign in</a>
-                </p>
-            </div>
-        </div>
-        
-        <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
-        <script src="/static/app.js?v=${Date.now()}"></script>
-        <script>
-          // Budget slider functionality
-          const budgetRange = document.getElementById('budgetRange');
-          const budgetDisplay = document.getElementById('budgetDisplay');
-          
-          budgetRange.addEventListener('input', function() {
-            budgetDisplay.textContent = 'Budget: $' + this.value;
-            const percentage = ((this.value - this.min) / (this.max - this.min)) * 100;
-            this.style.background = 'linear-gradient(to right, #4F73DF 0%, #4F73DF ' + percentage + '%, #e5e7eb ' + percentage + '%, #e5e7eb 100%)';
-          });
-          
-          // Initialize slider
-          const percentage = ((budgetRange.value - budgetRange.min) / (budgetRange.max - budgetRange.min)) * 100;
-          budgetRange.style.background = 'linear-gradient(to right, #4F73DF 0%, #4F73DF ' + percentage + '%, #e5e7eb ' + percentage + '%, #e5e7eb 100%)';
-          
-          // Search functionality
-          document.getElementById('findProvidersBtn').addEventListener('click', function() {
-            performSearch();
-          });
-          
-
-          
-          async function performSearch() {
-            const formData = {
-              serviceType: document.getElementById('serviceTypeSearch').value,
-              location: document.getElementById('location').value,
-
-              budget: document.getElementById('budgetRange').value,
-              additionalServices: Array.from(document.querySelectorAll('input[name="additionalServices"]:checked')).map(cb => cb.value)
-            };
-            
-            console.log('Searching with:', formData);
-            
-            // Hide hero section and show results
-            document.querySelector('.gradient-bg').style.display = 'none';
-            document.getElementById('searchResults').classList.remove('hidden');
-            
-            // Call API to search providers
-            try {
-              const response = await fetch('/api/providers/search?' + Date.now(), {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Cache-Control': 'no-cache',
-                  'Pragma': 'no-cache'
-                },
-                body: JSON.stringify(formData)
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                if (data.success && data.providers) {
-                  console.log('API search successful:', data.total, 'providers found');
-                  loadSearchResults(data.providers);
-                } else {
-                  console.warn('API search returned no results or failed:', data.error);
-                  loadSearchResults([]);
-                }
-              } else {
-                console.error('API search failed with status:', response.status);
-                loadSearchResults([]);
-              }
-            } catch (error) {
-              console.error('Search error:', error);
-              loadSearchResults([]);
-            }
-          }
-          
-          function getAvatarColor(initials) {
-            const colors = [
-              'from-blue-500 to-purple-600',
-              'from-green-500 to-teal-600', 
-              'from-red-500 to-pink-600',
-              'from-yellow-500 to-orange-600',
-              'from-indigo-500 to-blue-600',
-              'from-purple-500 to-indigo-600',
-              'from-pink-500 to-rose-600',
-              'from-teal-500 to-cyan-600'
-            ];
-            
-            const index = initials.charCodeAt(0) % colors.length;
-            return colors[index];
-          }
-          
-          function getDemoProviders() {
-            return [
-              {
-                id: 1,
-                name: 'Sarah Johnson',
-                company: 'Crystal Clean Services',
-                rating: 4.9,
-                reviews: 127,
-                rate: 45,
-                distance: 2.3,
-                services: ['Residential Cleaning', 'Deep Cleaning', 'Move-out Cleaning'],
-                image: null,
-                initials: 'SJ',
-                verified: true,
-                available: 'Today',
-                bio: 'Professional cleaning service with 8 years experience. Fully insured and bonded. Specializing in residential and commercial cleaning.'
-              },
-              {
-                id: 2,
-                name: 'Mike Chen',
-                company: 'Pro Clean Solutions',
-                rating: 4.8,
-                reviews: 89,
-                rate: 40,
-                distance: 3.1,
-                services: ['Office Cleaning', 'Commercial Cleaning', 'Window Cleaning'],
-                image: null,
-                initials: 'MC',
-                verified: true,
-                available: 'Tomorrow',
-                bio: 'Eco-friendly cleaning solutions for offices and commercial spaces. Licensed and insured with excellent customer reviews.'
-              },
-              {
-                id: 3,
-                name: 'Lisa Rodriguez',
-                company: 'Spotless Homes',
-                rating: 4.7,
-                reviews: 203,
-                rate: 38,
-                distance: 4.5,
-                services: ['Home Cleaning', 'Kitchen Deep Clean', 'Bathroom Cleaning'],
-                image: null,
-                initials: 'LR',
-                verified: true,
-                available: 'This Week',
-                bio: 'Detail-oriented home cleaning specialist. Background checked and bonded. Flexible scheduling and customized cleaning plans.'
-              }
-            ];
-          }
-          
-          // JavaScript truncation function for frontend consistency
-          function truncateText(text, maxLength = 400) {
-            if (!text) return '';
-            
-            // Strip HTML tags if any
-            const textOnly = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-            
-            // Truncate to maxLength characters
-            if (textOnly.length <= maxLength) {
-              return textOnly;
-            }
-            
-            // Find the last complete word within the limit
-            const truncated = textOnly.substring(0, maxLength);
-            const lastSpaceIndex = truncated.lastIndexOf(' ');
-            
-            // If we found a space near the end, truncate to the last complete word
-            const finalText = lastSpaceIndex > maxLength * 0.8 ? truncated.substring(0, lastSpaceIndex) : truncated;
-            
-            return finalText + '...';
-          }
-          
-          function loadSearchResults(providers) {
-            document.getElementById('loadingState').style.display = 'none';
-            
-            if (providers.length === 0) {
-              document.getElementById('emptyState').classList.remove('hidden');
-              return;
-            }
-            
-            const providersList = document.getElementById('providersList');
-            providersList.innerHTML = providers.map(provider => \`
-              <div class="bg-white rounded-lg shadow-sm border hover:shadow-md transition-shadow duration-300 p-6">
-                <div class="flex items-start space-x-4">
-                  \${provider.image ? 
-                    \`<img src="\${provider.image}" alt="\${provider.name}" class="w-20 h-20 rounded-full object-cover">\` : 
-                    \`<div class="w-20 h-20 rounded-full bg-gradient-to-br \${getAvatarColor(provider.initials || provider.name.split(' ').map(n => n[0]).join(''))} flex items-center justify-center text-white text-xl font-bold">\${provider.initials || provider.name.split(' ').map(n => n[0]).join('')}</div>\`
-                  }
-                  <div class="flex-1">
-                    <div class="flex items-center justify-between mb-2">
-                      <div>
-                        <h3 class="text-lg font-semibold text-gray-800">\${provider.name}</h3>
-                        <p class="text-sm text-gray-600">\${provider.company}</p>
-                      </div>
-                      <div class="text-right">
-                        <div class="text-2xl font-bold text-primary-blue">$\${provider.rate}/hr</div>
-                        <div class="text-sm text-gray-500">\${provider.distance} km away</div>
-                      </div>
-                    </div>
-                    
-                    <div class="flex items-center space-x-4 mb-3">
-                      <div class="flex items-center">
-                        <span class="text-yellow-400 text-sm">★★★★★</span>
-                        <span class="ml-1 text-sm font-medium">\${provider.rating}</span>
-                        <span class="ml-1 text-sm text-gray-500">(\${provider.reviews} reviews)</span>
-                      </div>
-                      \${provider.verified ? '<span class="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full">✓ Verified</span>' : ''}
-                      <span class="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">Available \${provider.available}</span>
-                    </div>
-                    
-                    <p class="text-gray-600 text-sm mb-4">\${truncateText(provider.bio, 400)}</p>
-                    
-                    <div class="flex flex-wrap gap-2 mb-4">
-                      \${provider.services.map(service => \`
-                        <span class="bg-gray-100 text-gray-700 text-xs px-3 py-1 rounded-full">\${service}</span>
-                      \`).join('')}
-                    </div>
-                    
-                    <div class="flex items-center space-x-3">
-                      <button onclick="toggleInvite(\${provider.id}, '\${provider.name}', this)" 
-                              class="invite-btn bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors inline-flex items-center" 
-                              data-provider-id="\${provider.id}" 
-                              data-invited="false">
-                        <i class="fas fa-user-plus mr-2"></i>
-                        <span class="invite-text">Invite to Bid</span>
-                      </button>
-                      <a href="/universal-profile/\${provider.id}" class="border border-kwikr-green text-kwikr-green px-6 py-2 rounded-lg hover:bg-kwikr-green hover:text-white transition-colors inline-flex items-center">
-                        <i class="fas fa-eye mr-2"></i>View Profile
-                      </a>
-                      <button class="border border-gray-300 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-50 transition-colors">
-                        <i class="fas fa-heart mr-2"></i>Save
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            \`).join('');
-          }
-          
-          // Invite System
-          let invitedProviders = new Set();
-          
-          function toggleInvite(providerId, providerName, buttonElement) {
-            const isInvited = buttonElement.getAttribute('data-invited') === 'true';
-            const inviteText = buttonElement.querySelector('.invite-text');
-            const icon = buttonElement.querySelector('i');
-            
-            if (isInvited) {
-              // Remove invitation
-              invitedProviders.delete(providerId);
-              buttonElement.setAttribute('data-invited', 'false');
-              buttonElement.className = 'invite-btn bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors inline-flex items-center';
-              icon.className = 'fas fa-user-plus mr-2';
-              inviteText.textContent = 'Invite to Bid';
-              
-              // Show success message
-              showNotification(\`Invitation withdrawn for \${providerName}\`, 'info');
-            } else {
-              // Add invitation
-              invitedProviders.add(providerId);
-              buttonElement.setAttribute('data-invited', 'true');
-              buttonElement.className = 'invite-btn bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors inline-flex items-center';
-              icon.className = 'fas fa-check mr-2';
-              inviteText.textContent = 'Invited';
-              
-              // Show success message
-              showNotification(\`\${providerName} invited to bid on your project!\`, 'success');
-            }
-            
-            updateInviteCounter();
-          }
-          
-          function updateInviteCounter() {
-            const counter = document.getElementById('inviteCounter');
-            if (counter) {
-              const count = invitedProviders.size;
-              counter.textContent = count > 0 ? \`(\${count} invited)\` : '';
-              counter.style.display = count > 0 ? 'inline' : 'none';
-            }
-          }
-          
-          function showNotification(message, type = 'info') {
-            // Create notification element
-            const notification = document.createElement('div');
-            notification.className = \`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg transition-all duration-300 transform translate-x-full \${
-              type === 'success' ? 'bg-green-500 text-white' : 
-              type === 'error' ? 'bg-red-500 text-white' : 
-              'bg-blue-500 text-white'
-            }\`;
-            notification.innerHTML = \`
-              <div class="flex items-center">
-                <i class="fas \${type === 'success' ? 'fa-check-circle' : type === 'error' ? 'fa-exclamation-circle' : 'fa-info-circle'} mr-2"></i>
-                <span>\${message}</span>
-                <button onclick="this.parentElement.parentElement.remove()" class="ml-4 text-white hover:text-gray-200">
-                  <i class="fas fa-times"></i>
-                </button>
-              </div>
-            \`;
-            
-            document.body.appendChild(notification);
-            
-            // Animate in
-            setTimeout(() => {
-              notification.classList.remove('translate-x-full');
-            }, 100);
-            
-            // Auto remove after 3 seconds
-            setTimeout(() => {
-              notification.classList.add('translate-x-full');
-              setTimeout(() => {
-                if (notification.parentElement) {
-                  notification.remove();
-                }
-              }, 300);
-            }, 3000);
-          }
-          
-          function getInvitedProviders() {
-            return Array.from(invitedProviders);
-          }
-          
-          // Modal functions
-          function showLoginModal() {
-            document.getElementById('loginModal').classList.remove('hidden');
-          }
-          
-          function hideLoginModal() {
-            document.getElementById('loginModal').classList.add('hidden');
-          }
-          
-          function showSignupModal() {
-            document.getElementById('signupModal').classList.remove('hidden');
-          }
-          
-          function hideSignupModal() {
-            document.getElementById('signupModal').classList.add('hidden');
-          }
-        </script>
-    </body>
-    </html>
-  `)
-})
-
 // Duplicate search endpoint removed - using Excel-based search above
 
 // ORIGINAL USER HOMEPAGE - RESTORED
@@ -6305,11 +5675,9 @@ app.get('/', (c) => {
             }
           }
           
-          // Load provinces based on selected service type
-          async function loadProvinces(serviceType = '') {
-            // Service-specific province distribution (realistic based on 885 total workers)
-            const serviceProvinceData = {
-              'Flooring': [
+          // Service-specific province distribution (realistic based on 885 total workers)
+          const serviceProvinceData = {
+            'Flooring': [
                 { province: 'ON', worker_count: 94, name: 'Ontario' },
                 { province: 'QC', worker_count: 48, name: 'Quebec' },
                 { province: 'BC', worker_count: 46, name: 'British Columbia' },
@@ -6389,25 +5757,128 @@ app.get('/', (c) => {
                 { province: 'BC', worker_count: 2, name: 'British Columbia' },
                 { province: 'AB', worker_count: 2, name: 'Alberta' }
               ]
-            };
+          };
+          
+          // Base city distribution ratios (proportional distribution templates)
+          const baseCityDistribution = {
+            'ON': [
+              { city: 'Toronto', ratio: 0.25 },      // 25%
+              { city: 'Ottawa', ratio: 0.16 },       // 16%
+              { city: 'Mississauga', ratio: 0.13 },  // 13%
+              { city: 'Hamilton', ratio: 0.10 },     // 10%
+              { city: 'London', ratio: 0.09 },       // 9%
+              { city: 'Markham', ratio: 0.08 },      // 8%
+              { city: 'Vaughan', ratio: 0.07 },      // 7%
+              { city: 'Kitchener', ratio: 0.05 },    // 5%
+              { city: 'Other Cities', ratio: 0.07 }  // 7%
+            ],
+            'QC': [
+              { city: 'Montreal', ratio: 0.40 },     // 40%
+              { city: 'Quebec City', ratio: 0.26 },  // 26%
+              { city: 'Laval', ratio: 0.14 },        // 14%
+              { city: 'Gatineau', ratio: 0.11 },     // 11%
+              { city: 'Sherbrooke', ratio: 0.09 }    // 9%
+            ],
+            'BC': [
+              { city: 'Vancouver', ratio: 0.36 },    // 36%
+              { city: 'Surrey', ratio: 0.21 },       // 21%
+              { city: 'Burnaby', ratio: 0.17 },      // 17%
+              { city: 'Richmond', ratio: 0.14 },     // 14%
+              { city: 'Victoria', ratio: 0.12 }      // 12%
+            ],
+            'AB': [
+              { city: 'Calgary', ratio: 0.44 },      // 44%
+              { city: 'Edmonton', ratio: 0.40 },     // 40%
+              { city: 'Red Deer', ratio: 0.08 },     // 8%
+              { city: 'Lethbridge', ratio: 0.08 }    // 8%
+            ],
+            'MB': [
+              { city: 'Winnipeg', ratio: 0.75 },     // 75%
+              { city: 'Brandon', ratio: 0.25 }       // 25%
+            ],
+            'SK': [
+              { city: 'Saskatoon', ratio: 0.55 },    // 55%
+              { city: 'Regina', ratio: 0.45 }        // 45%
+            ],
+            'NS': [
+              { city: 'Halifax', ratio: 0.70 },      // 70%
+              { city: 'Sydney', ratio: 0.30 }        // 30%
+            ],
+            'NB': [
+              { city: 'Moncton', ratio: 0.45 },      // 45%
+              { city: 'Saint John', ratio: 0.35 },   // 35%
+              { city: 'Fredericton', ratio: 0.20 }   // 20%
+            ]
+          };
+          
+          // Function to calculate dynamic city distribution based on service-specific province totals
+          function calculateCityDistribution(province, serviceType) {
+            console.log('calculateCityDistribution called with:', { province, serviceType });
             
-            // Default to all provinces if no service type specified
-            const allProvincesData = [
-              { province: 'ON', worker_count: 347, name: 'Ontario' },
-              { province: 'QC', worker_count: 179, name: 'Quebec' },
-              { province: 'BC', worker_count: 166, name: 'British Columbia' },
-              { province: 'AB', worker_count: 160, name: 'Alberta' },
-              { province: 'MB', worker_count: 28, name: 'Manitoba' },
-              { province: 'SK', worker_count: 27, name: 'Saskatchewan' },
-              { province: 'NS', worker_count: 15, name: 'Nova Scotia' },
-              { province: 'NB', worker_count: 10, name: 'New Brunswick' },
-              { province: 'YT', worker_count: 4, name: 'Yukon' },
-              { province: 'NL', worker_count: 3, name: 'Newfoundland & Labrador' },
-              { province: 'PE', worker_count: 1, name: 'Prince Edward Island' }
-            ];
+            // Get service-specific province total
+            let provinceTotal = 0;
+            if (serviceType && serviceProvinceData[serviceType]) {
+              const provinceData = serviceProvinceData[serviceType].find(p => p.province === province);
+              provinceTotal = provinceData ? provinceData.worker_count : 0;
+              console.log('Found service-specific data:', { serviceType, province, provinceTotal });
+            } else {
+              // Use all-provinces data if no service type specified
+              const allProvincesData = [
+                { province: 'ON', worker_count: 347 },
+                { province: 'QC', worker_count: 179 },
+                { province: 'BC', worker_count: 166 },
+                { province: 'AB', worker_count: 160 },
+                { province: 'MB', worker_count: 28 },
+                { province: 'SK', worker_count: 27 },
+                { province: 'NS', worker_count: 15 },
+                { province: 'NB', worker_count: 10 },
+                { province: 'YT', worker_count: 4 },
+                { province: 'NL', worker_count: 3 },
+                { province: 'PE', worker_count: 1 }
+              ];
+              const provinceData = allProvincesData.find(p => p.province === province);
+              provinceTotal = provinceData ? provinceData.worker_count : 0;
+              console.log('Using all-provinces data:', { province, provinceTotal });
+            }
             
+            // Get base city distribution for this province
+            const baseCities = baseCityDistribution[province] || [];
+            if (baseCities.length === 0 || provinceTotal === 0) {
+              return [];
+            }
+            
+            // Calculate proportional worker counts and ensure they sum to province total
+            let cityDistribution = baseCities.map(city => ({
+              city: city.city,
+              worker_count: Math.round(city.ratio * provinceTotal)
+            }));
+            
+            console.log('Initial city distribution:', cityDistribution);
+            
+            // Adjust for rounding errors to ensure exact sum
+            const currentSum = cityDistribution.reduce((sum, city) => sum + city.worker_count, 0);
+            const difference = provinceTotal - currentSum;
+            
+            console.log('Sum check:', { currentSum, provinceTotal, difference });
+            
+            if (difference !== 0) {
+              // Adjust the largest city to compensate for rounding errors
+              const largestCityIndex = cityDistribution.reduce((maxIndex, city, index, arr) => 
+                city.worker_count > arr[maxIndex].worker_count ? index : maxIndex, 0);
+              cityDistribution[largestCityIndex].worker_count += difference;
+            }
+            
+            // Filter out cities with 0 workers and sort by worker count
+            return cityDistribution
+              .filter(city => city.worker_count > 0)
+              .sort((a, b) => b.worker_count - a.worker_count);
+          }
+
+          // Load provinces based on selected service type
+          async function loadProvinces(serviceType = '') {
+            // Get actual province data from database
             try {
-              // Try to fetch from API first
+              // Call API to get real province counts based on service type
               let url = '/api/locations/provinces?' + Date.now();
               if (serviceType && serviceType !== '') {
                 url += '&serviceType=' + encodeURIComponent(serviceType);
@@ -6421,13 +5892,25 @@ app.get('/', (c) => {
               });
               const data = await response.json();
               
-              // Use API data if successful, otherwise fall back to service-specific data
-              let provincesToUse = allProvincesData;
+              // Use API data, fall back to basic provinces if API fails
+              let provincesToUse = [];
               if (data.success && data.provinces && data.provinces.length > 0) {
                 provincesToUse = data.provinces;
-              } else if (serviceType && serviceProvinceData[serviceType]) {
-                // Use service-specific province data
-                provincesToUse = serviceProvinceData[serviceType];
+              } else {
+                // Fallback to basic provinces without counts if API fails
+                provincesToUse = [
+                  { province: 'AB', name: 'Alberta' },
+                  { province: 'BC', name: 'British Columbia' },
+                  { province: 'MB', name: 'Manitoba' },
+                  { province: 'NB', name: 'New Brunswick' },
+                  { province: 'NL', name: 'Newfoundland & Labrador' },
+                  { province: 'NS', name: 'Nova Scotia' },
+                  { province: 'ON', name: 'Ontario' },
+                  { province: 'PE', name: 'Prince Edward Island' },
+                  { province: 'QC', name: 'Quebec' },
+                  { province: 'SK', name: 'Saskatchewan' },
+                  { province: 'YT', name: 'Yukon' }
+                ];
               }
               
               const provinceSelect = document.getElementById('provinceMain');
@@ -6438,12 +5921,28 @@ app.get('/', (c) => {
                 // Clear existing options except "All Provinces"
                 provinceSelect.innerHTML = '<option value="">All Provinces</option>';
                 
+                // Province code to name mapping
+                const provinceNames = {
+                  'AB': 'Alberta',
+                  'BC': 'British Columbia', 
+                  'MB': 'Manitoba',
+                  'NB': 'New Brunswick',
+                  'NL': 'Newfoundland & Labrador',
+                  'NS': 'Nova Scotia',
+                  'ON': 'Ontario',
+                  'PE': 'Prince Edward Island',
+                  'QC': 'Quebec',
+                  'SK': 'Saskatchewan',
+                  'YT': 'Yukon'
+                };
+                
                 // Add province options sorted by worker count
                 provincesToUse.forEach(province => {
                   const option = document.createElement('option');
                   option.value = province.province;
-                  const displayName = province.name || province.province;
-                  option.textContent = displayName + ' (' + province.worker_count + ' workers)';
+                  const displayName = province.name || provinceNames[province.province] || province.province;
+                  const workerCount = province.worker_count || 0;
+                  option.textContent = displayName + ' (' + workerCount + ' worker' + (workerCount !== 1 ? 's' : '') + ')';
                   provinceSelect.appendChild(option);
                 });
                 
@@ -6491,126 +5990,13 @@ app.get('/', (c) => {
               return;
             }
             
-            // Base city distribution ratios (proportional distribution templates)
-            const baseCityDistribution = {
-              'ON': [
-                { city: 'Toronto', ratio: 0.25 },      // 25%
-                { city: 'Ottawa', ratio: 0.16 },       // 16%
-                { city: 'Mississauga', ratio: 0.13 },  // 13%
-                { city: 'Hamilton', ratio: 0.10 },     // 10%
-                { city: 'London', ratio: 0.09 },       // 9%
-                { city: 'Markham', ratio: 0.08 },      // 8%
-                { city: 'Vaughan', ratio: 0.07 },      // 7%
-                { city: 'Kitchener', ratio: 0.05 },    // 5%
-                { city: 'Other Cities', ratio: 0.07 }  // 7%
-              ],
-              'QC': [
-                { city: 'Montreal', ratio: 0.40 },     // 40%
-                { city: 'Quebec City', ratio: 0.26 },  // 26%
-                { city: 'Laval', ratio: 0.14 },        // 14%
-                { city: 'Gatineau', ratio: 0.11 },     // 11%
-                { city: 'Sherbrooke', ratio: 0.09 }    // 9%
-              ],
-              'BC': [
-                { city: 'Vancouver', ratio: 0.36 },    // 36%
-                { city: 'Surrey', ratio: 0.21 },       // 21%
-                { city: 'Burnaby', ratio: 0.17 },      // 17%
-                { city: 'Richmond', ratio: 0.14 },     // 14%
-                { city: 'Victoria', ratio: 0.12 }      // 12%
-              ],
-              'AB': [
-                { city: 'Calgary', ratio: 0.44 },      // 44%
-                { city: 'Edmonton', ratio: 0.40 },     // 40%
-                { city: 'Red Deer', ratio: 0.08 },     // 8%
-                { city: 'Lethbridge', ratio: 0.08 }    // 8%
-              ],
-              'MB': [
-                { city: 'Winnipeg', ratio: 0.75 },     // 75%
-                { city: 'Brandon', ratio: 0.25 }       // 25%
-              ],
-              'SK': [
-                { city: 'Saskatoon', ratio: 0.55 },    // 55%
-                { city: 'Regina', ratio: 0.45 }        // 45%
-              ],
-              'NS': [
-                { city: 'Halifax', ratio: 0.70 },      // 70%
-                { city: 'Sydney', ratio: 0.30 }        // 30%
-              ],
-              'NB': [
-                { city: 'Moncton', ratio: 0.45 },      // 45%
-                { city: 'Saint John', ratio: 0.35 },   // 35%
-                { city: 'Fredericton', ratio: 0.20 }   // 20%
-              ]
-            };
-            
-            // Function to calculate dynamic city distribution based on service-specific province totals
-            function calculateCityDistribution(province, serviceType) {
-              // Get service-specific province total
-              let provinceTotal = 0;
-              if (serviceType && serviceProvinceData[serviceType]) {
-                const provinceData = serviceProvinceData[serviceType].find(p => p.province === province);
-                provinceTotal = provinceData ? provinceData.worker_count : 0;
-              } else {
-                // Use all-provinces data if no service type specified
-                const allProvincesData = [
-                  { province: 'ON', worker_count: 347 },
-                  { province: 'QC', worker_count: 179 },
-                  { province: 'BC', worker_count: 166 },
-                  { province: 'AB', worker_count: 160 },
-                  { province: 'MB', worker_count: 28 },
-                  { province: 'SK', worker_count: 27 },
-                  { province: 'NS', worker_count: 15 },
-                  { province: 'NB', worker_count: 10 },
-                  { province: 'YT', worker_count: 4 },
-                  { province: 'NL', worker_count: 3 },
-                  { province: 'PE', worker_count: 1 }
-                ];
-                const provinceData = allProvincesData.find(p => p.province === province);
-                provinceTotal = provinceData ? provinceData.worker_count : 0;
-              }
-              
-              // Get base city distribution for this province
-              const baseCities = baseCityDistribution[province] || [];
-              if (baseCities.length === 0 || provinceTotal === 0) {
-                return [];
-              }
-              
-              // Calculate proportional worker counts and ensure they sum to province total
-              let cityDistribution = baseCities.map(city => ({
-                city: city.city,
-                worker_count: Math.round(city.ratio * provinceTotal)
-              }));
-              
-              // Adjust for rounding errors to ensure exact sum
-              const currentSum = cityDistribution.reduce((sum, city) => sum + city.worker_count, 0);
-              const difference = provinceTotal - currentSum;
-              
-              if (difference !== 0) {
-                // Adjust the largest city to compensate for rounding errors
-                const largestCityIndex = cityDistribution.reduce((maxIndex, city, index, arr) => 
-                  city.worker_count > arr[maxIndex].worker_count ? index : maxIndex, 0);
-                cityDistribution[largestCityIndex].worker_count += difference;
-              }
-              
-              // Filter out cities with 0 workers and sort by worker count
-              return cityDistribution
-                .filter(city => city.worker_count > 0)
-                .sort((a, b) => b.worker_count - a.worker_count);
-            }
+            // Call API to get real city data
+            citySelect.innerHTML = '<option value="">Loading cities...</option>';
+            citySelect.disabled = true;
             
             try {
-              citySelect.innerHTML = '<option value="">Loading cities...</option>';
-              citySelect.disabled = true;
-              
-              // Get serviceType from dropdown if not provided as parameter
-              if (serviceType === null) {
-                const serviceTypeSelect = document.getElementById('serviceTypeMain');
-                serviceType = serviceTypeSelect ? serviceTypeSelect.value : '';
-              }
-              
-              // Build URL with serviceType parameter if provided
-              let url = '/api/locations/cities/' + encodeURIComponent(province) + '?' + Date.now();
-              if (serviceType && serviceType !== '') {
+              let url = '/api/locations/cities/' + province + '?' + Date.now();
+              if (serviceType) {
                 url += '&serviceType=' + encodeURIComponent(serviceType);
               }
               
@@ -6622,41 +6008,23 @@ app.get('/', (c) => {
               });
               const data = await response.json();
               
-              if (data.success && data.cities) {
-                citySelect.innerHTML = '<option value="">All Cities</option>';
-                
-                // Add city options sorted by worker count
+              citySelect.innerHTML = '<option value="">All Cities</option>';
+              
+              if (data.success && data.cities && data.cities.length > 0) {
+                // Use API data
                 data.cities.forEach(city => {
                   const option = document.createElement('option');
                   option.value = city.city;
-                  option.textContent = city.city + ' (' + city.worker_count + ' workers)';
+                  const workerCount = city.worker_count || 0;
+                  option.textContent = city.city + ' (' + workerCount + ' worker' + (workerCount !== 1 ? 's' : '') + ')';
                   citySelect.appendChild(option);
                 });
-                
-                citySelect.disabled = false;
-              } else {
-                // Fallback to dynamic city data calculation when API fails
-                citySelect.innerHTML = '<option value="">All Cities</option>';
-                const cityData = calculateCityDistribution(province, serviceType);
-                cityData.forEach(city => {
-                  const option = document.createElement('option');
-                  option.value = city.city;
-                  option.textContent = city.city + ' (' + city.worker_count + ' workers)';
-                  citySelect.appendChild(option);
-                });
-                citySelect.disabled = false;
               }
+              
+              citySelect.disabled = false;
             } catch (error) {
               console.error('Failed to load cities:', error);
-              // Fallback to dynamic city data calculation even on error
               citySelect.innerHTML = '<option value="">All Cities</option>';
-              const cityData = calculateCityDistribution(province, serviceType);
-              cityData.forEach(city => {
-                const option = document.createElement('option');
-                option.value = city.city;
-                option.textContent = city.city + ' (' + city.worker_count + ' workers)';
-                citySelect.appendChild(option);
-              });
               citySelect.disabled = false;
             }
           }
@@ -6693,14 +6061,17 @@ app.get('/', (c) => {
           
           // Event handlers for cascading dropdowns
           function onServiceTypeChange(serviceType) {
+            console.log('onServiceTypeChange called with:', serviceType);
             // Reload provinces based on selected service type
             loadProvinces(serviceType);
           }
           
           function onProvinceChange(province) {
+            console.log('onProvinceChange called with:', province);
             // Get current service type and load cities
             const serviceTypeSelect = document.getElementById('serviceTypeMain');
             const serviceType = serviceTypeSelect ? serviceTypeSelect.value : '';
+            console.log('Loading cities for province:', province, 'serviceType:', serviceType);
             loadCitiesForProvince(province, serviceType);
           }
           

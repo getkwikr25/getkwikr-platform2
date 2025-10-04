@@ -1557,42 +1557,52 @@ function initializeSearchFunctionality() {
   }
 }
 
-// Populate provinces dropdown with counts
-function populateProvinces() {
+// Populate provinces dropdown with counts from API
+async function populateProvinces() {
   const provinceSelect = document.getElementById('provinceMain')
   if (!provinceSelect) return
   
   console.log('Populating provinces dropdown')
   
-  // Calculate total workers per province
-  const provinceCounts = {}
-  Object.keys(PROVINCES_CITIES).forEach(code => {
-    const cities = MOCK_WORKER_COUNTS[code] || {}
-    const totalWorkers = Object.values(cities).reduce((sum, count) => sum + count, 0)
-    provinceCounts[code] = totalWorkers
-  })
-  
-  // Clear existing options except the first one
-  provinceSelect.innerHTML = '<option value="">All Provinces</option>'
-  
-  // Add province options with counts, sorted by worker count
-  Object.entries(provinceCounts)
-    .sort((a, b) => b[1] - a[1]) // Sort by worker count descending
-    .forEach(([code, count]) => {
-      const province = PROVINCES_CITIES[code]
-      if (province && count > 0) {
-        const option = document.createElement('option')
-        option.value = code
-        option.textContent = `${province.name} (${count})`
-        provinceSelect.appendChild(option)
-      }
-    })
-  
-  console.log('Provinces populated with counts:', provinceCounts)
+  try {
+    // Fetch province data from API
+    const response = await fetch('/api/locations/provinces')
+    const data = await response.json()
+    
+    if (data.success && data.provinces) {
+      console.log('API provinces data:', data.provinces)
+      
+      // Clear existing options
+      provinceSelect.innerHTML = '<option value="">All Provinces</option>'
+      
+      // Add province options with counts from API, sorted by worker count
+      data.provinces
+        .sort((a, b) => b.worker_count - a.worker_count)
+        .forEach(item => {
+          const province = PROVINCES_CITIES[item.province]
+          if (province && item.worker_count > 0) {
+            const option = document.createElement('option')
+            option.value = item.province
+            option.textContent = `${province.name} (${item.worker_count})`
+            provinceSelect.appendChild(option)
+          }
+        })
+      
+      console.log('Provinces populated with API counts:', data.provinces)
+    } else {
+      console.error('Failed to fetch provinces from API:', data)
+      // Fallback to empty state
+      provinceSelect.innerHTML = '<option value="">No provinces available</option>'
+    }
+  } catch (error) {
+    console.error('Error fetching provinces:', error)
+    // Fallback to empty state
+    provinceSelect.innerHTML = '<option value="">Error loading provinces</option>'
+  }
 }
 
-// Handle province change and populate cities
-function onProvinceChange(provinceCode) {
+// Handle province change and populate cities from API
+async function onProvinceChange(provinceCode) {
   const citySelect = document.getElementById('cityMain')
   if (!citySelect) return
   
@@ -1605,7 +1615,6 @@ function onProvinceChange(provinceCode) {
   }
   
   const province = PROVINCES_CITIES[provinceCode]
-  const cityCounts = MOCK_WORKER_COUNTS[provinceCode] || {}
   
   if (!province) {
     citySelect.innerHTML = '<option value="">No cities available</option>'
@@ -1613,26 +1622,57 @@ function onProvinceChange(provinceCode) {
     return
   }
   
-  // Clear and populate cities
-  citySelect.innerHTML = '<option value="">All Cities</option>'
+  try {
+    // Fetch cities data from API
+    const response = await fetch(`/api/locations/cities/${provinceCode}`)
+    const data = await response.json()
+    
+    if (data.success && data.cities) {
+      console.log('API cities data for', provinceCode, ':', data.cities)
+      
+      // Clear and populate cities
+      citySelect.innerHTML = '<option value="">All Cities</option>'
+      citySelect.disabled = false
+      
+      // Add city options from API, sorted by worker count
+      data.cities
+        .sort((a, b) => b.worker_count - a.worker_count)
+        .forEach(item => {
+          if (item.worker_count > 0) {
+            const option = document.createElement('option')
+            option.value = item.city
+            option.textContent = `${item.city} (${item.worker_count})`
+            citySelect.appendChild(option)
+          }
+        })
+      
+      citySelect.disabled = false
+      console.log('Cities populated for', province.name, ':', data.cities.length, 'cities')
+    } else {
+      console.error('Failed to fetch cities from API:', data)
+      citySelect.innerHTML = '<option value="">No cities available</option>'
+      citySelect.disabled = true
+    }
+  } catch (error) {
+    console.error('Error fetching cities:', error)
+    citySelect.innerHTML = '<option value="">Error loading cities</option>'
+    citySelect.disabled = true
+  }
+}
+
+// Synchronous wrapper for onProvinceChange to handle async calls from HTML events
+function handleProvinceChange(provinceCode) {
+  console.log('Province change event triggered for:', provinceCode)
   
-  // Sort cities by worker count
-  const sortedCities = province.cities
-    .filter(city => cityCounts[city] > 0)
-    .sort((a, b) => (cityCounts[b] || 0) - (cityCounts[a] || 0))
-  
-  sortedCities.forEach(city => {
-    const count = cityCounts[city] || 0
-    if (count > 0) {
-      const option = document.createElement('option')
-      option.value = city
-      option.textContent = `${city} (${count})`
-      citySelect.appendChild(option)
+  // Call the async function and handle any errors
+  onProvinceChange(provinceCode).catch(error => {
+    console.error('Error in province change handler:', error)
+    const citySelect = document.getElementById('cityMain')
+    if (citySelect) {
+      citySelect.innerHTML = '<option value="">Error loading cities</option>'
+      citySelect.disabled = true
     }
   })
-  
-  citySelect.disabled = false
-  console.log('Cities populated for', province.name, ':', sortedCities.length, 'cities')
 }
 
 // Handle service type change and update additional services
@@ -1835,8 +1875,8 @@ function handleFindProviders() {
     params.append('additional', additionalServices.join(','))
   }
   
-  // Navigate to worker browser page with search parameters
-  const searchUrl = `/dashboard/client/workers?${params.toString()}`
+  // Navigate to search results page with search parameters
+  const searchUrl = `/search?${params.toString()}`
   console.log('Navigating to:', searchUrl)
   
   // Show loading state briefly
@@ -1850,7 +1890,7 @@ function handleFindProviders() {
 }
 
 // Export search functions to global scope
-window.onProvinceChange = onProvinceChange
+window.onProvinceChange = handleProvinceChange
 window.onServiceTypeChange = onServiceTypeChange
 window.toggleOtherServiceField = toggleOtherServiceField
 window.handleFindProviders = handleFindProviders
