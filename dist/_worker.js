@@ -17273,9 +17273,15 @@ Resolution: ${r.notes}`,!1),await this.notifyDisputeResolved(t,r),await this.can
               updateAdditionalServicesSearch(serviceTypeSearchSelect.value);
             }
             
-            // Load provinces on page load with current service type
+            // Load provinces on page load with current service type  
+            // Ensure we always pass the default service type for initial load
             const initialServiceType = serviceTypeSelect ? serviceTypeSelect.value : 'Cleaning Services';
-            loadProvinces(initialServiceType);
+            console.log('Loading provinces with initial service type:', initialServiceType);
+            
+            // Wait a moment to ensure DOM is fully ready, then load provinces
+            setTimeout(() => {
+              loadProvinces(initialServiceType);
+            }, 100);
             
             // Load service categories
             loadServiceCategories();
@@ -17417,11 +17423,13 @@ Resolution: ${r.notes}`,!1),await this.notifyDisputeResolved(t,r),await this.can
           // Load provinces based on selected service type
           async function loadProvinces(serviceType = '') {
             try {
+              console.log('loadProvinces called with serviceType:', serviceType);
               // Build URL with serviceType parameter if provided
               let url = '/api/locations/provinces?' + Date.now();
               if (serviceType && serviceType !== '') {
                 url += '&serviceType=' + encodeURIComponent(serviceType);
               }
+              console.log('Fetching provinces from URL:', url);
               
               const response = await fetch(url, {
                 headers: {
