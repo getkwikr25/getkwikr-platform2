@@ -6170,6 +6170,7 @@ app.get('/', (c) => {
             
             // Load provinces on page load with current service type
             const initialServiceType = serviceTypeSelect ? serviceTypeSelect.value : 'Cleaning Services';
+            console.log('Loading provinces with initial service type:', initialServiceType);
             loadProvinces(initialServiceType);
             
             // Load service categories
@@ -6312,11 +6313,13 @@ app.get('/', (c) => {
           // Load provinces based on selected service type
           async function loadProvinces(serviceType = '') {
             try {
+              console.log('loadProvinces called with serviceType:', serviceType);
               // Build URL with serviceType parameter if provided
               let url = '/api/locations/provinces?' + Date.now();
               if (serviceType && serviceType !== '') {
                 url += '&serviceType=' + encodeURIComponent(serviceType);
               }
+              console.log('Fetching provinces from URL:', url);
               
               const response = await fetch(url, {
                 headers: {
