@@ -957,30 +957,44 @@ app.get('/api/popular-categories', async (c) => {
 // Location API Endpoints for Dropdowns
 app.get('/api/locations/provinces', async (c) => {
   try {
+    console.log('Provinces API called')
     const serviceType = c.req.query('serviceType')
+    console.log('Service type parameter:', serviceType)
+    
+    // Check if database is available
+    if (!c.env.DB) {
+      console.error('Database not available')
+      return c.json({ success: false, error: 'Database not available' }, 500)
+    }
     
     let query = ''
     let params = []
     
     if (serviceType && serviceType.trim()) {
-      // Service-type-specific province counts
+      console.log('Filtering by service type:', serviceType)
+      // Service-type-specific province counts - simplified query
       const serviceTypeLower = serviceType.toLowerCase().trim()
       
-      // Enhanced service type synonym mapping for better matching
-      const synonymMap: { [key: string]: string[] } = {
-        'electricians': ['electrical services', 'electrical', 'electric', 'electrician'],
-        'plumbers': ['plumbing services', 'plumbing', 'professional plumbing services', 'residential plumbing', 'commercial plumbing', 'plumber'],
-        'cleaning services': ['cleaners', 'cleaning', 'cleaner', 'house cleaning', 'commercial cleaning'],
-        'hvac services': ['hvac', 'heating', 'cooling', 'air conditioning', 'furnace'],
-        'general contractor': ['contractors', 'general contracting services', 'contractor', 'construction', 'general contracting'],
-        'flooring': ['flooring services', 'floor installation', 'hardwood', 'carpet', 'tile'],
-        'roofing': ['roofing services', 'roof repair', 'roof installation'],
-        'landscaping': ['landscaping services', 'lawn care', 'gardening', 'yard work'],
-        'carpenters': ['carpentry', 'carpenter', 'woodworking', 'cabinetry', 'trim work'],
-        'painters': ['painting', 'painter', 'house painting', 'interior painting', 'exterior painting'],
-        'handyman': ['handyman services', 'general repairs', 'home repairs', 'maintenance'],
-        'renovations': ['renovation', 'home renovation', 'remodeling', 'home improvement', 'restoration']
-      }
+      // Simplified service type matching
+      query = `
+        SELECT u.province, COUNT(DISTINCT u.id) as worker_count 
+        FROM users u
+        LEFT JOIN worker_services ws ON u.id = ws.user_id
+        WHERE u.role = 'worker' AND u.province IS NOT NULL 
+        AND (
+          LOWER(ws.service_category) LIKE ? OR 
+          LOWER(ws.service_name) LIKE ? OR
+          LOWER(ws.service_category) LIKE ? OR
+          LOWER(ws.service_name) LIKE ?
+        )
+        GROUP BY u.province 
+        ORDER BY worker_count DESC
+      `
+      
+      // Add variations of the service type
+      const searchTerm1 = `%${serviceTypeLower}%`
+      const searchTerm2 = `%${serviceTypeLower.replace(' services', '')}%`
+      params = [searchTerm1, searchTerm1, searchTerm2, searchTerm2]
       
       // Get all possible search terms including synonyms
       let searchTerms = [serviceTypeLower]
@@ -1012,30 +1026,45 @@ app.get('/api/locations/provinces', async (c) => {
         GROUP BY u.province 
         ORDER BY worker_count DESC
       `
-      params.push(...searchTerms.flatMap(term => [`%${term}%`, `%${term}%`]))
     } else {
-      // All workers count (original behavior)
+      console.log('No service type - getting all workers by province')
+      // All workers count
       query = `
-        SELECT DISTINCT u.province, COUNT(*) as worker_count 
+        SELECT u.province, COUNT(DISTINCT u.id) as worker_count 
         FROM users u 
         WHERE u.role = 'worker' AND u.province IS NOT NULL 
         GROUP BY u.province 
         ORDER BY worker_count DESC
       `
+      params = []
     }
     
-    const provinces = await c.env.DB.prepare(query).bind(...params).all()
+    console.log('Executing query:', query)
+    console.log('With params:', params)
+    
+    const result = await c.env.DB.prepare(query).bind(...params).all()
+    console.log('Query result:', result)
     
     // Set cache-busting headers
     c.header('Cache-Control', 'no-cache, no-store, must-revalidate')
     c.header('Pragma', 'no-cache')
     c.header('Expires', '0')
     
-    return c.json({ 
-      success: true, 
-      provinces: provinces.results,
-      serviceType: serviceType || null
-    })
+    if (result && result.results) {
+      console.log('Returning provinces:', result.results.length, 'provinces found')
+      return c.json({ 
+        success: true, 
+        provinces: result.results,
+        serviceType: serviceType || null
+      })
+    } else {
+      console.log('No results from query')
+      return c.json({ 
+        success: true, 
+        provinces: [],
+        serviceType: serviceType || null
+      })
+    }
   } catch (error) {
     console.error('Failed to fetch provinces:', error)
     return c.json({ 
